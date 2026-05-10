@@ -16,7 +16,12 @@ class LinkedInJobsScraper(BaseScraper):
             url = "https://www.linkedin.com/jobs/search/?" + urlencode(params)
 
             await page.set_extra_http_headers({
-                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
+                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
             })
 
             await page.goto(
@@ -31,7 +36,6 @@ class LinkedInJobsScraper(BaseScraper):
             current_url = page.url
             body_text = await page.locator("body").inner_text(timeout=10000)
 
-            # Debug-Hinweise erkennen
             lower_body = body_text.lower()
 
             blocked_indicators = [
@@ -41,7 +45,10 @@ class LinkedInJobsScraper(BaseScraper):
                 "sign in",
                 "join linkedin",
                 "authwall",
-                "challenge"
+                "challenge",
+                "sicherheitsüberprüfung",
+                "einloggen",
+                "anmelden"
             ]
 
             detected_blocks = [
@@ -50,27 +57,31 @@ class LinkedInJobsScraper(BaseScraper):
                 if indicator in lower_body
             ]
 
-            # Mehrere mögliche Selektoren testen
+            # Erst normale Job-Karten suchen
             selectors = [
                 ".job-search-card",
+                ".base-search-card",
                 ".base-card",
                 "li[data-occludable-job-id]",
                 ".jobs-search__results-list li"
             ]
 
-            cards = None
             used_selector = None
+            card_count = 0
 
             for selector in selectors:
                 count = await page.locator(selector).count()
 
                 if count > 0:
-                    cards = page.locator(selector)
                     used_selector = selector
+                    card_count = count
                     break
 
-            if not cards:
-                await page.screenshot(path="linkedin-debug-no-results.png", full_page=True)
+            if not used_selector:
+                await page.screenshot(
+                    path="linkedin-debug-no-cards.png",
+                    full_page=True
+                )
 
                 html = await page.content()
 
@@ -80,44 +91,116 @@ class LinkedInJobsScraper(BaseScraper):
                     "current_url": current_url,
                     "page_title": page_title,
                     "used_selector": None,
+                    "card_count": 0,
                     "detected_blocks": detected_blocks,
-                    "body_preview": body_text[:1500],
-                    "html_preview": html[:1500],
+                    "body_preview": body_text[:2000],
+                    "html_preview": html[:2000],
+                    "count": 0,
                     "results": []
                 }
 
-            jobs = []
-            count = await cards.count()
+            # Robuste Extraktion direkt im Browser-Kontext
+            jobs = await page.locator(used_selector).evaluate_all(
+                """
+                (cards) => {
+                    return cards.map((card) => {
+                        const pickText = (selectors) => {
+                            for (const selector of selectors) {
+                                const el = card.querySelector(selector);
+                                if (el && el.innerText && el.innerText.trim()) {
+                                    return el.innerText.trim();
+                                }
+                                if (el && el.textContent && el.textContent.trim()) {
+                                    return el.textContent.trim();
+                                }
+                            }
+                            return "";
+                        };
 
-            for i in range(min(count, 25)):
-                card = cards.nth(i)
+                        const pickAttr = (selectors, attr) => {
+                            for (const selector of selectors) {
+                                const el = card.querySelector(selector);
+                                if (el && el.getAttribute(attr)) {
+                                    return el.getAttribute(attr);
+                                }
+                            }
+                            return "";
+                        };
 
-                title = await self.safe_text(card, [
-                    ".job-search-card__title",
-                    ".base-search-card__title",
-                    "h3",
-                    "a"
-                ])
+                        const title = pickText([
+                            ".base-search-card__title",
+                            ".job-search-card__title",
+                            "h3",
+                            "a"
+                        ]);
 
-                company = await self.safe_text(card, [
-                    ".job-search-card__subtitle",
-                    ".base-search-card__subtitle",
-                    "h4"
-                ])
+                        const company = pickText([
+                            ".base-search-card__subtitle",
+                            ".job-search-card__subtitle",
+                            "h4",
+                            ".hidden-nested-link"
+                        ]);
 
-                job_location = await self.safe_text(card, [
-                    ".job-search-card__location",
-                    ".job-search-card__metadata",
-                    ".base-search-card__metadata"
-                ])
+                        const location = pickText([
+                            ".job-search-card__location",
+                            ".base-search-card__metadata",
+                            ".job-search-card__metadata",
+                            ".job-search-card__listdate",
+                            ".job-search-card__benefits"
+                        ]);
 
-                link = await self.safe_attr(card, [
-                    ".base-card__full-link",
-                    "a"
-                ], "href")
+                        let link = pickAttr([
+                            ".base-card__full-link",
+                            "a[href*='/jobs/view']",
+                            "a"
+                        ], "href");
 
-                if title:
-                    jobs.append({
+                        if (link && link.startsWith("/")) {
+                            link = "https://www.linkedin.com" + link;
+                        }
+
+                        return {
+                            title,
+                            company,
+                            location,
+                            url: link,
+                            source: "linkedin",
+                            raw_text: card.innerText ? card.innerText.trim() : ""
+                        };
+                    });
+                }
+                """
+            )
+
+            # Fallback: Wenn Titel leer ist, aus raw_text die ersten Zeilen ableiten
+            cleaned_jobs = []
+
+            for job in jobs:
+                title = job.get("title", "").strip()
+                company = job.get("company", "").strip()
+                job_location = job.get("location", "").strip()
+                link = job.get("url", "").strip()
+                raw_text = job.get("raw_text", "").strip()
+
+                if not title and raw_text:
+                    lines = [
+                        line.strip()
+                        for line in raw_text.split("\n")
+                        if line.strip()
+                    ]
+
+                    if len(lines) > 0:
+                        title = lines[0]
+
+                    if len(lines) > 1 and not company:
+                        company = lines[1]
+
+                    if len(lines) > 2 and not job_location:
+                        job_location = lines[2]
+
+                # Nur Jobs behalten, die wenigstens Titel oder Link haben
+                if title or link:
+                    cleaned_jobs.append({
                         "title": title,
                         "company": company,
                         "location": job_location,
@@ -125,43 +208,19 @@ class LinkedInJobsScraper(BaseScraper):
                         "source": "linkedin"
                     })
 
+            await page.screenshot(
+                path="linkedin-debug-success.png",
+                full_page=True
+            )
+
             return {
                 "debug": False,
                 "url": url,
                 "current_url": current_url,
                 "page_title": page_title,
                 "used_selector": used_selector,
+                "card_count": card_count,
                 "detected_blocks": detected_blocks,
-                "count": len(jobs),
-                "results": jobs
+                "count": len(cleaned_jobs),
+                "results": cleaned_jobs[:25]
             }
-
-    async def safe_text(self, parent, selectors):
-        for selector in selectors:
-            try:
-                locator = parent.locator(selector).first()
-
-                if await locator.count() > 0:
-                    text = await locator.inner_text(timeout=3000)
-
-                    if text:
-                        return text.strip()
-            except Exception:
-                continue
-
-        return ""
-
-    async def safe_attr(self, parent, selectors, attr):
-        for selector in selectors:
-            try:
-                locator = parent.locator(selector).first()
-
-                if await locator.count() > 0:
-                    value = await locator.get_attribute(attr, timeout=3000)
-
-                    if value:
-                        return value.strip()
-            except Exception:
-                continue
-
-        return ""
