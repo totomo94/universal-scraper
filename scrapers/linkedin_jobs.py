@@ -4,7 +4,13 @@ from utils.browser import BrowserManager
 
 
 class LinkedInJobsScraper(BaseScraper):
-    async def scrape(self, keyword: str, location: str | None = None):
+    async def scrape(
+        self,
+        keyword: str,
+        location: str | None = None,
+        max_jobs: int = 10,
+        include_description: bool = True
+    ):
         async with BrowserManager(headless=True) as page:
             params = {
                 "keywords": keyword
@@ -57,7 +63,6 @@ class LinkedInJobsScraper(BaseScraper):
                 if indicator in lower_body
             ]
 
-            # Erst normale Job-Karten suchen
             selectors = [
                 ".job-search-card",
                 ".base-search-card",
@@ -99,7 +104,6 @@ class LinkedInJobsScraper(BaseScraper):
                     "results": []
                 }
 
-            # Robuste Extraktion direkt im Browser-Kontext
             jobs = await page.locator(used_selector).evaluate_all(
                 """
                 (cards) => {
@@ -144,9 +148,7 @@ class LinkedInJobsScraper(BaseScraper):
                         const location = pickText([
                             ".job-search-card__location",
                             ".base-search-card__metadata",
-                            ".job-search-card__metadata",
-                            ".job-search-card__listdate",
-                            ".job-search-card__benefits"
+                            ".job-search-card__metadata"
                         ]);
 
                         let link = pickAttr([
@@ -172,7 +174,6 @@ class LinkedInJobsScraper(BaseScraper):
                 """
             )
 
-            # Fallback: Wenn Titel leer ist, aus raw_text die ersten Zeilen ableiten
             cleaned_jobs = []
 
             for job in jobs:
@@ -198,7 +199,6 @@ class LinkedInJobsScraper(BaseScraper):
                     if len(lines) > 2 and not job_location:
                         job_location = lines[2]
 
-                # Nur Jobs behalten, die wenigstens Titel oder Link haben
                 if title or link:
                     cleaned_jobs.append({
                         "title": title,
@@ -208,10 +208,25 @@ class LinkedInJobsScraper(BaseScraper):
                         "source": "linkedin"
                     })
 
-            await page.screenshot(
-                path="linkedin-debug-success.png",
-                full_page=True
-            )
+            cleaned_jobs = cleaned_jobs[:max_jobs]
+
+            if include_description:
+                for job in cleaned_jobs:
+                    if not job.get("url"):
+                        job["description"] = ""
+                        job["description_status"] = "missing_url"
+                        continue
+
+                    description_data = await self.extract_job_description(
+                        page=page,
+                        url=job["url"]
+                    )
+
+                    job["description"] = description_data["description"]
+                    job["description_status"] = description_data["status"]
+                    job["description_page_title"] = description_data["page_title"]
+
+                    await page.wait_for_timeout(1500)
 
             return {
                 "debug": False,
@@ -222,5 +237,93 @@ class LinkedInJobsScraper(BaseScraper):
                 "card_count": card_count,
                 "detected_blocks": detected_blocks,
                 "count": len(cleaned_jobs),
-                "results": cleaned_jobs[:25]
+                "results": cleaned_jobs
             }
+
+    async def extract_job_description(self, page, url: str):
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            await page.wait_for_timeout(5000)
+
+            page_title = await page.title()
+            body_text = await page.locator("body").inner_text(timeout=10000)
+
+            lower_body = body_text.lower()
+
+            blocked_indicators = [
+                "captcha",
+                "security verification",
+                "unusual activity",
+                "authwall",
+                "challenge",
+                "sicherheitsüberprüfung"
+            ]
+
+            for indicator in blocked_indicators:
+                if indicator in lower_body:
+                    return {
+                        "status": f"blocked_or_challenge_detected:{indicator}",
+                        "page_title": page_title,
+                        "description": ""
+                    }
+
+            description_selectors = [
+                ".show-more-less-html__markup",
+                ".description__text",
+                ".jobs-description-content__text",
+                ".jobs-box__html-content",
+                ".jobs-description__content",
+                "section.description",
+                "div.description",
+                "main"
+            ]
+
+            for selector in description_selectors:
+                locator = page.locator(selector).first()
+
+                try:
+                    if await locator.count() > 0:
+                        text = await locator.inner_text(timeout=5000)
+
+                        text = self.clean_text(text)
+
+                        if text and len(text) > 100:
+                            return {
+                                "status": "ok",
+                                "page_title": page_title,
+                                "description": text
+                            }
+                except Exception:
+                    continue
+
+            return {
+                "status": "description_not_found",
+                "page_title": page_title,
+                "description": self.clean_text(body_text[:5000])
+            }
+
+        except Exception as e:
+            return {
+                "status": f"error:{str(e)}",
+                "page_title": "",
+                "description": ""
+            }
+
+    def clean_text(self, text: str):
+        if not text:
+            return ""
+
+        lines = [
+            line.strip()
+            for line in text.split("\n")
+            if line.strip()
+        ]
+
+        cleaned = "\n".join(lines)
+
+        return cleaned
