@@ -215,6 +215,7 @@ class LinkedInJobsScraper(BaseScraper):
                     if not job.get("url"):
                         job["description"] = ""
                         job["description_status"] = "missing_url"
+                        job["description_page_title"] = ""
                         continue
 
                     description_data = await self.extract_job_description(
@@ -284,12 +285,11 @@ class LinkedInJobsScraper(BaseScraper):
             ]
 
             for selector in description_selectors:
-                locator = page.locator(selector).first()
-
                 try:
+                    locator = page.locator(selector).first
+
                     if await locator.count() > 0:
                         text = await locator.inner_text(timeout=5000)
-
                         text = self.clean_text(text)
 
                         if text and len(text) > 100:
@@ -298,6 +298,7 @@ class LinkedInJobsScraper(BaseScraper):
                                 "page_title": page_title,
                                 "description": text
                             }
+
                 except Exception:
                     continue
 
