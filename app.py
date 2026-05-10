@@ -4,7 +4,7 @@ from scrapers.simple_page import SimplePageScraper
 
 app = FastAPI(
     title="Universal Scraper API",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 
@@ -13,7 +13,7 @@ async def root():
     return {
         "status": "ok",
         "service": "Universal Scraper API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "endpoints": [
             "/jobs/linkedin",
             "/scrape/simple"
@@ -35,11 +35,15 @@ async def linkedin_jobs(
         10,
         ge=1,
         le=50,
-        description="Maximale Anzahl an Jobseiten, deren Details geöffnet werden"
+        description="Maximale Anzahl an Jobseiten, deren Details geöffnet werden. Maximal 50."
     ),
     include_description: bool = Query(
         True,
         description="Wenn true, werden die einzelnen Jobseiten geöffnet und die Stellenbeschreibung extrahiert"
+    ),
+    time_filter: str | None = Query(
+        "r86400",
+        description="LinkedIn Zeitfilter. r86400 = letzte 24h, r604800 = letzte Woche, r2592000 = letzter Monat"
     )
 ):
     scraper = LinkedInJobsScraper()
@@ -48,7 +52,8 @@ async def linkedin_jobs(
         keyword=keyword,
         location=location,
         max_jobs=max_jobs,
-        include_description=include_description
+        include_description=include_description,
+        time_filter=time_filter
     )
 
     return {
@@ -57,6 +62,7 @@ async def linkedin_jobs(
         "location": location,
         "max_jobs": max_jobs,
         "include_description": include_description,
+        "time_filter": time_filter,
         **data
     }
 
