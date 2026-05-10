@@ -9,7 +9,8 @@ class LinkedInJobsScraper(BaseScraper):
         keyword: str,
         location: str | None = None,
         max_jobs: int = 10,
-        include_description: bool = True
+        include_description: bool = True,
+        time_filter: str | None = "r86400"
     ):
         async with BrowserManager(headless=True) as page:
             params = {
@@ -18,6 +19,9 @@ class LinkedInJobsScraper(BaseScraper):
 
             if location:
                 params["location"] = location
+
+            if time_filter:
+                params["f_TPR"] = time_filter
 
             url = "https://www.linkedin.com/jobs/search/?" + urlencode(params)
 
@@ -111,23 +115,28 @@ class LinkedInJobsScraper(BaseScraper):
                         const pickText = (selectors) => {
                             for (const selector of selectors) {
                                 const el = card.querySelector(selector);
+
                                 if (el && el.innerText && el.innerText.trim()) {
                                     return el.innerText.trim();
                                 }
+
                                 if (el && el.textContent && el.textContent.trim()) {
                                     return el.textContent.trim();
                                 }
                             }
+
                             return "";
                         };
 
                         const pickAttr = (selectors, attr) => {
                             for (const selector of selectors) {
                                 const el = card.querySelector(selector);
+
                                 if (el && el.getAttribute(attr)) {
                                     return el.getAttribute(attr);
                                 }
                             }
+
                             return "";
                         };
 
