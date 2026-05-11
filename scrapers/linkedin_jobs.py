@@ -250,7 +250,7 @@ class LinkedInJobsScraper(BaseScraper):
                 "results": cleaned_jobs
             }
 
-    async def extract_job_description(self, page, url: str):
+        async def extract_job_description(self, page, url: str):
         try:
             await page.goto(
                 url,
@@ -258,7 +258,7 @@ class LinkedInJobsScraper(BaseScraper):
                 timeout=60000
             )
 
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(6000)
 
             page_title = await page.title()
             body_text = await page.locator("body").inner_text(timeout=10000)
@@ -282,39 +282,104 @@ class LinkedInJobsScraper(BaseScraper):
                         "description": ""
                     }
 
+            # LinkedIn öffnet öffentliche Jobseiten teils mit Login-/Signup-Modulen.
+            # Diese Texte dürfen nicht als Stellenbeschreibung gespeichert werden.
+            bad_page_indicators = [
+                "mitglied werden",
+                "e-mail-adresse",
+                "passwort",
+                "zustimmen & anmelden",
+                "bereits mitglied bei linkedin",
+                "einloggen",
+                "join linkedin",
+                "sign in",
+                "sign up"
+            ]
+
+            # Erst gezielte Description-Selektoren, NICHT sofort "main".
             description_selectors = [
                 ".show-more-less-html__markup",
                 ".description__text",
                 ".jobs-description-content__text",
                 ".jobs-box__html-content",
                 ".jobs-description__content",
-                "section.description",
-                "div.description",
-                "main"
+                ".decorated-job-posting__details",
+                ".jobs-description",
+                "section.core-section-container"
             ]
+
+            candidates = []
 
             for selector in description_selectors:
                 try:
-                    locator = page.locator(selector).first
+                    locators = page.locator(selector)
+                    count = await locators.count()
 
-                    if await locator.count() > 0:
+                    for i in range(min(count, 5)):
+                        locator = locators.nth(i)
                         text = await locator.inner_text(timeout=5000)
                         text = self.clean_text(text)
 
-                        if text and len(text) > 100:
-                            return {
-                                "status": "ok",
-                                "page_title": page_title,
-                                "description": text
-                            }
+                        if text and len(text) > 80:
+                            candidates.append({
+                                "selector": selector,
+                                "text": text
+                            })
 
                 except Exception:
                     continue
 
+            # Kandidaten bewerten: Login-Texte verwerfen, längere echte Beschreibungen bevorzugen.
+            valid_candidates = []
+
+            for candidate in candidates:
+                text = candidate["text"]
+
+                if self.is_bad_description(text):
+                    continue
+
+                valid_candidates.append(candidate)
+
+            if valid_candidates:
+                best = sorted(
+                    valid_candidates,
+                    key=lambda item: len(item["text"]),
+                    reverse=True
+                )[0]
+
+                return {
+                    "status": f"ok:{best['selector']}",
+                    "page_title": page_title,
+                    "description": best["text"]
+                }
+
+            # Fallback: Body nur nutzen, wenn er nicht nach Login-Wall aussieht.
+            body_clean = self.clean_text(body_text)
+
+            if body_clean and not self.is_bad_description(body_clean) and len(body_clean) > 150:
+                return {
+                    "status": "ok:body_fallback",
+                    "page_title": page_title,
+                    "description": body_clean[:6000]
+                }
+
+            # Falls Body/Login erkannt wurde, sauber leer zurückgeben.
+            found_bad_indicators = [
+                indicator
+                for indicator in bad_page_indicators
+                if indicator in lower_body
+            ]
+
+            await page.screenshot(
+                path="linkedin-debug-bad-description.png",
+                full_page=True
+            )
+
             return {
-                "status": "description_not_found",
+                "status": "description_not_found_or_login_wall",
                 "page_title": page_title,
-                "description": self.clean_text(body_text[:5000])
+                "description": "",
+                "debug_indicators": found_bad_indicators
             }
 
         except Exception as e:
@@ -323,6 +388,43 @@ class LinkedInJobsScraper(BaseScraper):
                 "page_title": "",
                 "description": ""
             }
+
+    def is_bad_description(self, text: str):
+        if not text:
+            return True
+
+        lower = text.lower()
+
+        bad_phrases = [
+            "mitglied werden",
+            "e-mail-adresse",
+            "passwort",
+            "zustimmen & anmelden",
+            "bereits mitglied bei linkedin",
+            "einloggen",
+            "join linkedin",
+            "sign in",
+            "sign up",
+            "cookie-richtlinie",
+            "nutzervereinbarung",
+            "datenschutzrichtlinie"
+        ]
+
+        hits = [
+            phrase
+            for phrase in bad_phrases
+            if phrase in lower
+        ]
+
+        # Wenn mehrere Login-/Signup-Hinweise enthalten sind, ist es keine Jobbeschreibung.
+        if len(hits) >= 2:
+            return True
+
+        # Sehr kurze Texte sind meist keine brauchbaren Beschreibungen.
+        if len(text.strip()) < 80:
+            return True
+
+        return False
 
     def clean_text(self, text: str):
         if not text:
