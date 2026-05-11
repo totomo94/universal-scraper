@@ -232,9 +232,12 @@ class LinkedInJobsScraper(BaseScraper):
                         url=job["url"]
                     )
 
-                    job["description"] = description_data["description"]
-                    job["description_status"] = description_data["status"]
-                    job["description_page_title"] = description_data["page_title"]
+                    job["description"] = description_data.get("description", "")
+                    job["description_status"] = description_data.get("status", "")
+                    job["description_page_title"] = description_data.get("page_title", "")
+
+                    if "debug_indicators" in description_data:
+                        job["description_debug_indicators"] = description_data["debug_indicators"]
 
                     await page.wait_for_timeout(1500)
 
@@ -250,7 +253,7 @@ class LinkedInJobsScraper(BaseScraper):
                 "results": cleaned_jobs
             }
 
-        async def extract_job_description(self, page, url: str):
+    async def extract_job_description(self, page, url: str):
         try:
             await page.goto(
                 url,
@@ -282,8 +285,6 @@ class LinkedInJobsScraper(BaseScraper):
                         "description": ""
                     }
 
-            # LinkedIn öffnet öffentliche Jobseiten teils mit Login-/Signup-Modulen.
-            # Diese Texte dürfen nicht als Stellenbeschreibung gespeichert werden.
             bad_page_indicators = [
                 "mitglied werden",
                 "e-mail-adresse",
@@ -296,7 +297,6 @@ class LinkedInJobsScraper(BaseScraper):
                 "sign up"
             ]
 
-            # Erst gezielte Description-Selektoren, NICHT sofort "main".
             description_selectors = [
                 ".show-more-less-html__markup",
                 ".description__text",
@@ -329,7 +329,6 @@ class LinkedInJobsScraper(BaseScraper):
                 except Exception:
                     continue
 
-            # Kandidaten bewerten: Login-Texte verwerfen, längere echte Beschreibungen bevorzugen.
             valid_candidates = []
 
             for candidate in candidates:
@@ -353,7 +352,6 @@ class LinkedInJobsScraper(BaseScraper):
                     "description": best["text"]
                 }
 
-            # Fallback: Body nur nutzen, wenn er nicht nach Login-Wall aussieht.
             body_clean = self.clean_text(body_text)
 
             if body_clean and not self.is_bad_description(body_clean) and len(body_clean) > 150:
@@ -363,7 +361,6 @@ class LinkedInJobsScraper(BaseScraper):
                     "description": body_clean[:6000]
                 }
 
-            # Falls Body/Login erkannt wurde, sauber leer zurückgeben.
             found_bad_indicators = [
                 indicator
                 for indicator in bad_page_indicators
@@ -416,11 +413,9 @@ class LinkedInJobsScraper(BaseScraper):
             if phrase in lower
         ]
 
-        # Wenn mehrere Login-/Signup-Hinweise enthalten sind, ist es keine Jobbeschreibung.
         if len(hits) >= 2:
             return True
 
-        # Sehr kurze Texte sind meist keine brauchbaren Beschreibungen.
         if len(text.strip()) < 80:
             return True
 
