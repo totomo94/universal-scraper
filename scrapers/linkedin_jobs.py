@@ -261,14 +261,28 @@ class LinkedInJobsScraper(BaseScraper):
                 timeout=60000
             )
 
-            await page.wait_for_timeout(6000)
+            try:
+                await page.wait_for_selector(
+                    ".show-more-less-html__markup, "
+                    ".description__text, "
+                    ".jobs-description-content__text, "
+                    ".jobs-description, "
+                    ".decorated-job-posting__details, "
+                    ".jobs-box__html-content, "
+                    ".jobs-description__content",
+                    timeout=12000
+                )
+            except Exception:
+                pass
+
+            await page.wait_for_timeout(3000)
 
             page_title = await page.title()
             body_text = await page.locator("body").inner_text(timeout=10000)
 
             lower_body = body_text.lower()
 
-            blocked_indicators = [
+            hard_block_indicators = [
                 "captcha",
                 "security verification",
                 "unusual activity",
@@ -277,7 +291,7 @@ class LinkedInJobsScraper(BaseScraper):
                 "sicherheitsüberprüfung"
             ]
 
-            for indicator in blocked_indicators:
+            for indicator in hard_block_indicators:
                 if indicator in lower_body:
                     return {
                         "status": f"blocked_or_challenge_detected:{indicator}",
@@ -294,7 +308,10 @@ class LinkedInJobsScraper(BaseScraper):
                 "einloggen",
                 "join linkedin",
                 "sign in",
-                "sign up"
+                "sign up",
+                "cookie-richtlinie",
+                "nutzervereinbarung",
+                "datenschutzrichtlinie"
             ]
 
             description_selectors = [
@@ -354,7 +371,11 @@ class LinkedInJobsScraper(BaseScraper):
 
             body_clean = self.clean_text(body_text)
 
-            if body_clean and not self.is_bad_description(body_clean) and len(body_clean) > 150:
+            if (
+                body_clean
+                and not self.is_bad_description(body_clean)
+                and len(body_clean) > 150
+            ):
                 return {
                     "status": "ok:body_fallback",
                     "page_title": page_title,
